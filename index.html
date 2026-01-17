@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Stable Particle Universe Simulator – No Phasing</title>
+<style>
+body { margin:0; overflow:hidden; background:black; }
+canvas { display:block; }
+</style>
+</head>
+<body>
+
+<canvas id="canvas"></canvas>
+
+<script>
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d");
+
+canvas.width = innerWidth;
+canvas.height = innerHeight;
+window.addEventListener("resize", () => {
+    canvas.width = innerWidth;
+    canvas.height = innerHeight;
+});
+
+// ----- CONFIG -----
+let G = 0.4;
+const WORLD_HALF_SIZE = 2200;
+const BORDER_PADDING = 200;
+const BORDER_SIZE = WORLD_HALF_SIZE + BORDER_PADDING;
+
+const SOFTENING = 25;   // prevents infinite acceleration
+const MAX_FORCE = 2.5;   // caps gravity
+const DAMPING = 0.999;   // global velocity damping
+const SUBSTEPS = 5;      // physics substeps per frame
+
+const particles = [];
+const keys = {};
+let zoom = 1;
+let camera = {x:0, y:0};
+
+// ----- INPUT -----
+document.addEventListener("keydown", e=> keys[e.key.toLowerCase()] = true);
+document.addEventListener("keyup", e=> keys[e.key.toLowerCase()] = false);
+canvas.addEventListener("wheel", e => {
+    zoom *= e.deltaY>0?0.9:1.1;
+    zoom = Math.min(Math.max(zoom,0.2),4);
+});
+
+// ----- PARTICLE -----
+class Particle {
+    constructor(x, y, mass){
+        this.x = x; this.y = y;
+        this.vx = (Math.random()-0.5)*2;
+        this.vy = (Math.random()-0.5)*2;
+        this.mass = mass;
+        this.radius = Math.cbrt(mass)*2;
+    }
+
+    applyForce(fx, fy){
+        this.vx += fx/this.mass;
+        this.vy += fy/this.mass;
+    }
+
+    update(){
+        this.x += this.vx;
+        this.y += this.vy;
+        this.vx *= DAMPING;
+        this.vy *= DAMPING;
+
+        const limit = BORDER_SIZE - this.radius;
+        if(this.x<-limit){ this.x=-limit; this.vx*=-0.8; }
+        if(this.x> limit){ this.x= limit; this.vx*=-0.8; }
+        if(this.y<-limit){ this.y=-limit; this.vy*=-0.8; }
+        if(this.y> limit){ this.y= limit; this.vy*=-0.8; }
+    }
+
+    draw(){
+        ctx.beginPath();
+        ctx.arc(this.x,this.y,this.radius,0,Math.PI*2);
+        ctx.fillStyle =
+            this.mass>500 ? "#ffaa00" :
+            this.mass>200 ? "#66aaff" :
+            this.mass>50  ? "#aaaaaa" :
+                            "#ffffff";
+        ctx.fill();
+    }
+}
+
+// ----- CREATE PARTICLES -----
+function createParticles(count=400){
+    for(let i=0;i<count;i++){
+        particles.push(new Particle(
+            (Math.random()-0.5)*WORLD_HALF_SIZE,
+            (Math.random()-0.5)*WORLD_HALF_SIZE,
+            Math.random()*5+2
+        ));
+    }
+}
+
+// ----- GRAVITY & COLLISION -----
+function physicsStep(){
+    // GRAVITY
+    for(let i=0;i<particles.length;i++){
+        for(let j=i+1;j<particles.length;j++){
+            const a = particles[i];
+            const b = particles[j];
+
+            let dx = b.x - a.x;
+            let dy = b.y - a.y;
+            let dist = Math.hypot(dx,dy) + SOFTENING;
+
+            let force = (G * a.mass * b.mass)/(dist*dist);
+            force = Math.min(force, MAX_FORCE);
+            const fx = force*dx/dist;
+            const fy = force*dy/dist;
+
+            a.applyForce(fx, fy);
+            b.applyForce(-fx, -fy);
+        }
+    }
+
+    // COLLISIONS (POSITION-BASED)
+    for(let i=0;i<particles.length;i++){
+        for(let j=i+1;j<particles.length;j++){
+            const a = particles[i];
+            const b = particles[j];
+
+            let dx = b.x - a.x;
+            let dy = b.y - a.y;
+            let dist = Math.hypot(dx, dy) || 0.0001;
+            const minDist = a.radius + b.radius;
+
+            if(dist < minDist){
+                const nx = dx/dist;
+                const ny = dy/dist;
+                const overlap = minDist - dist;
+                const totalMass = a.mass + b.mass;
+
+                // move particles immediately
+                a.x -= nx*overlap*(b.mass/totalMass);
+                a.y -= ny*overlap*(b.mass/totalMass);
+                b.x += nx*overlap*(a.mass/totalMass);
+                b.y += ny*overlap*(a.mass/totalMass);
+
+                // small velocity impulse
+                const relVx = b.vx - a.vx;
+                const relVy = b.vy - a.vy;
+                const vn = relVx*nx + relVy*ny;
+                if(vn<0){
+                    const impulse = vn*0.2;
+                    a.vx += impulse*nx; a.vy += impulse*ny;
+                    b.vx -= impulse*nx; b.vy -= impulse*ny;
+                }
+
+                // sticky accretion
+                if(Math.abs(vn)<0.3){
+                    a.mass += 0.01; b.mass += 0.01;
+                    a.radius = Math.cbrt(a.mass)*2;
+                    b.radius = Math.cbrt(b.mass)*2;
+                }
+            }
+        }
+    }
+
+    // UPDATE PARTICLES
+    for(const p of particles) p.update();
+}
+
+// ----- CAMERA -----
+function updateCamera(){
+    const speed = 15/zoom;
+    if(keys["w"]) camera.y -= speed;
+    if(keys["s"]) camera.y += speed;
+    if(keys["a"]) camera.x -= speed;
+    if(keys["d"]) camera.x += speed;
+}
+
+// ----- BORDER -----
+function drawBorder(){
+    ctx.strokeStyle="#444";
+    ctx.lineWidth=4;
+    ctx.strokeRect(-BORDER_SIZE,-BORDER_SIZE,BORDER_SIZE*2,BORDER_SIZE*2);
+}
+
+// ----- ANIMATE -----
+function animate(){
+    ctx.setTransform(1,0,0,1,0,0);
+    ctx.fillStyle="rgba(0,0,0,0.4)";
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    updateCamera();
+    ctx.translate(canvas.width/2,canvas.height/2);
+    ctx.scale(zoom,zoom);
+    ctx.translate(-camera.x,-camera.y);
+
+    // SUBSTEPS
+    for(let s=0;s<SUBSTEPS;s++) physicsStep();
+
+    drawBorder();
+    for(const p of particles) p.draw();
+
+    requestAnimationFrame(animate);
+}
+
+// ----- START -----
+createParticles();
+animate();
+</script>
+</body>
+</html>
